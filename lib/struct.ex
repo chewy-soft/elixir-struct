@@ -1,6 +1,9 @@
+defmodule DefaultParser do
+  use Parser
+end
+
 defmodule Struct do
   @default_constructor :struct
-  require Parser
 
   def fields(struct) do
     Enum.map(struct.__meta__, fn {field, _} -> field end)
@@ -21,41 +24,44 @@ defmodule Struct do
 
     inherits = opts[:inherits] || nil
     constructor_name = opts[:constructor_name] || @default_constructor
+    parser = opts[:parser] || DefaultParser
 
     quote do
       import unquote(__MODULE__)
 
-      Module.put_attribute(__MODULE__, :bgr_struct, true)
-      Module.register_attribute(__MODULE__, :bgr_struct_fields, accumulate: true)
-      Module.put_attribute(__MODULE__, :bgr_struct_inherits, unquote(inherits))
-      Module.put_attribute(__MODULE__, :bgr_struct_constructor, unquote(constructor_name))
+      Module.register_attribute(__MODULE__, :cs_struct_fields, accumulate: true)
+      Module.put_attribute(__MODULE__, :cs_struct, true)
+      Module.put_attribute(__MODULE__, :cs_struct_inherits, unquote(inherits))
+      Module.put_attribute(__MODULE__, :cs_struct_constructor, unquote(constructor_name))
+      Module.put_attribute(__MODULE__, :cs_struct_parser, unquote(parser))
       @before_compile unquote(__MODULE__)
     end
   end
 
   defmacro field(name, type \\ :any, opts \\ [default: nil]) do
     quote do
-      @bgr_struct_fields {unquote(name), {unquote(type), unquote(opts)}}
+      @cs_struct_fields {unquote(name), {unquote(type), unquote(opts)}}
     end
   end
 
   defmacro __before_compile__(env) do
-    inherits = Module.get_attribute(env.module, :bgr_struct_inherits) || nil
-    fields = Module.get_attribute(env.module, :bgr_struct_fields) || []
-    constructor_name = Module.get_attribute(env.module, :bgr_struct_constructor)
+    inherits = Module.get_attribute(env.module, :cs_struct_inherits) || nil
+    fields = Module.get_attribute(env.module, :cs_struct_fields) || []
+    constructor_name = Module.get_attribute(env.module, :cs_struct_constructor)
+    parser = Module.get_attribute(env.module, :cs_struct_parser)
 
     meta =
       cond do
         is_nil(inherits) -> fields
-        Parser.has_meta?(inherits) -> inherits.__meta__ ++ fields
-        Parser.is_struct(inherits) -> struct_to_meta(inherits) ++ fields
+        parser.has_meta?(inherits) -> inherits.__meta__ ++ fields
+        parser.is_struct(inherits) -> struct_to_meta(inherits) ++ fields
         true -> struct_to_meta(struct(inherits)) ++ fields
       end
 
     quote do
       def __meta__, do: unquote(meta)
-      defstruct unquote(meta_to_struct(meta))
-      unquote(defconstructor(constructor_name))
+      defstruct unquote(meta_to_struct(meta, parser))
+      unquote(defconstructor(constructor_name, parser))
 
       @behaviour Access
       def fetch(struct, key), do: Map.fetch(struct, key)
@@ -137,21 +143,21 @@ defmodule Struct do
     end)
   end
 
-  defp meta_to_struct(meta) do
+  defp meta_to_struct(meta, parser) do
     Enum.reduce(meta, [], fn {name, {type, opts}}, acc ->
       default =
         if is_nil(opts[:default]),
-          do: Macro.escape(Parser.default_by_type(type)),
+          do: Macro.escape(parser.default_by_type(type)),
           else: opts[:default]
 
       acc ++ [{name, default}]
     end)
   end
 
-  def defconstructor(name) do
+  def defconstructor(name, parser) do
     quote do
       def unquote(name)(map_or_kwlist \\ %{}) do
-        Parser.parse(map_or_kwlist, {:struct, __MODULE__})
+        unquote(parser).parse(map_or_kwlist, {:struct, __MODULE__})
       end
     end
   end
